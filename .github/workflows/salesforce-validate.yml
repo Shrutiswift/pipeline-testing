@@ -1,0 +1,55 @@
+# Validate every pull request against the target org. Nothing changes in the org:
+# `--dry-run` is a check-only deploy. Installed by Deployment Hub (deploy-console).
+name: Validate metadata
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['force-app/**']
+
+concurrency:
+  group: validate-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Check-only deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli@2 && sf --version
+
+      - name: Authenticate to the target org
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+        run: |
+          test -n "$SFDX_AUTH_URL" || { echo "::error::Repository secret SFDX_AUTH_URL is not set"; exit 1; }
+          printf '%s' "$SFDX_AUTH_URL" > "$RUNNER_TEMP/auth.txt"
+          sf org login sfdx-url --sfdx-url-file "$RUNNER_TEMP/auth.txt" --set-default --alias target-org
+          rm -f "$RUNNER_TEMP/auth.txt"
+
+      - name: Validate the changed metadata
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          # -z + read -d '': paths with spaces (layouts, profiles) survive
+          args=()
+          while IFS= read -r -d '' f; do
+            args+=(--source-dir "$f")
+            printf '  %s\n' "$f" >> "$GITHUB_STEP_SUMMARY"
+          done < <(git diff -z --name-only --diff-filter=d "origin/$BASE_REF...HEAD" -- 'force-app/**')
+          if [ ${#args[@]} -eq 0 ]; then
+            echo "No force-app changes in this pull request." >> "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          sf project deploy start --dry-run --test-level RunLocalTests --wait 60 \
+            --target-org target-org "${args[@]}"

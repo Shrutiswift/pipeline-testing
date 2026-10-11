@@ -7,6 +7,11 @@ on:
     branches: [main]
     paths: ['force-app/**']
 
+env:
+  # RunLocalTests enforces Salesforce's 75% org-wide coverage bar, which is right for production and
+  # wrong for a scratch org. Override per repo:  gh variable set SF_TEST_LEVEL --body NoTestRun
+  TEST_LEVEL: ${{ vars.SF_TEST_LEVEL || 'RunLocalTests' }}
+
 concurrency:
   group: validate-${{ github.head_ref }}
   cancel-in-progress: true
@@ -22,7 +27,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install Salesforce CLI
         run: npm install --global @salesforce/cli@2 && sf --version
@@ -51,5 +56,5 @@ jobs:
           if [ ${#args[@]} -eq 0 ]; then
             echo "No force-app changes in this pull request." >> "$GITHUB_STEP_SUMMARY"; exit 0
           fi
-          sf project deploy start --dry-run --test-level RunLocalTests --wait 60 \
+          sf project deploy start --dry-run --test-level "$TEST_LEVEL" --wait 60 \
             --target-org target-org "${args[@]}"

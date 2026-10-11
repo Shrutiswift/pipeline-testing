@@ -13,6 +13,11 @@ on:
         type: boolean
         default: false
 
+env:
+  # RunLocalTests enforces Salesforce's 75% org-wide coverage bar, which is right for production and
+  # wrong for a scratch org. Override per repo:  gh variable set SF_TEST_LEVEL --body NoTestRun
+  TEST_LEVEL: ${{ vars.SF_TEST_LEVEL || 'RunLocalTests' }}
+
 concurrency:
   group: deploy-main
   cancel-in-progress: false
@@ -63,5 +68,5 @@ jobs:
               echo "No force-app changes in this push." >> "$GITHUB_STEP_SUMMARY"; exit 0
             fi
           fi
-          sf project deploy start --test-level RunLocalTests --wait 60 \
+          sf project deploy start --test-level "$TEST_LEVEL" --wait 60 \
             --target-org target-org "${args[@]}"

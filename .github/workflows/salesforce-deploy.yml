@@ -1,0 +1,67 @@
+# Deploy to the target org once a pull request is merged into main.
+# Installed by Deployment Hub (deploy-console).
+name: Deploy metadata
+
+on:
+  push:
+    branches: [main]
+    paths: ['force-app/**']
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Deploy the whole force-app directory'
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to target org
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli@2 && sf --version
+
+      - name: Authenticate to the target org
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+        run: |
+          test -n "$SFDX_AUTH_URL" || { echo "::error::Repository secret SFDX_AUTH_URL is not set"; exit 1; }
+          printf '%s' "$SFDX_AUTH_URL" > "$RUNNER_TEMP/auth.txt"
+          sf org login sfdx-url --sfdx-url-file "$RUNNER_TEMP/auth.txt" --set-default --alias target-org
+          rm -f "$RUNNER_TEMP/auth.txt"
+
+      - name: Deploy what the merge changed
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          FULL: ${{ inputs.full }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$FULL" = "true" ] || [ -z "${BEFORE:-}" ] \
+             || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            args=(--source-dir force-app)          # first push, or asked for everything
+          else
+            while IFS= read -r -d '' f; do
+              args+=(--source-dir "$f")
+              printf '  %s\n' "$f" >> "$GITHUB_STEP_SUMMARY"
+            done < <(git diff -z --name-only --diff-filter=d "$BEFORE" "$AFTER" -- 'force-app/**')
+            if [ ${#args[@]} -eq 0 ]; then
+              echo "No force-app changes in this push." >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+          fi
+          sf project deploy start --test-level RunLocalTests --wait 60 \
+            --target-org target-org "${args[@]}"
